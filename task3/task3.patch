@@ -1,0 +1,91 @@
+diff --git a/kernel/linux-6.13.2/fs/proc/base.c b/kernel/linux-6.13.2/fs/proc/base.c
+index 0edf14a98..d89e05294 100644
+--- a/kernel/linux-6.13.2/fs/proc/base.c
++++ b/kernel/linux-6.13.2/fs/proc/base.c
+@@ -523,6 +523,21 @@ static int proc_pid_schedstat(struct seq_file *m, struct pid_namespace *ns,
+ }
+ #endif
+ 
++/*
++ * Provides /proc/PID/scheduled_count
++ */
++static int proc_pid_scheduled_count(struct seq_file *m, struct pid_namespace *ns,
++			      struct pid *pid, struct task_struct *task)
++{
++	if (unlikely(!task))
++		seq_puts(m, "No task\n\n");
++	else
++		seq_printf(m, "%lld\n", (int64_t)atomic64_read(&task->scheduled_count));
++	return 0;
++}
++
++
++
+ #ifdef CONFIG_LATENCYTOP
+ static int lstats_show_proc(struct seq_file *m, void *v)
+ {
+@@ -3363,6 +3378,7 @@ static const struct pid_entry tgid_base_stuff[] = {
+ #ifdef CONFIG_SCHED_INFO
+ 	ONE("schedstat",  S_IRUGO, proc_pid_schedstat),
+ #endif
++	ONE("scheduled_count",  S_IRUGO, proc_pid_scheduled_count),
+ #ifdef CONFIG_LATENCYTOP
+ 	REG("latency",  S_IRUGO, proc_lstats_operations),
+ #endif
+@@ -3712,6 +3728,7 @@ static const struct pid_entry tid_base_stuff[] = {
+ #ifdef CONFIG_SCHED_INFO
+ 	ONE("schedstat", S_IRUGO, proc_pid_schedstat),
+ #endif
++	ONE("scheduled_count", S_IRUGO, proc_pid_scheduled_count),
+ #ifdef CONFIG_LATENCYTOP
+ 	REG("latency",  S_IRUGO, proc_lstats_operations),
+ #endif
+diff --git a/kernel/linux-6.13.2/include/linux/sched.h b/kernel/linux-6.13.2/include/linux/sched.h
+index 949b53e0a..07f1f3fc3 100644
+--- a/kernel/linux-6.13.2/include/linux/sched.h
++++ b/kernel/linux-6.13.2/include/linux/sched.h
+@@ -889,6 +889,7 @@ struct task_struct {
+ #ifdef CONFIG_SMP
+ 	unsigned short			migration_disabled;
+ #endif
++	atomic64_t                      scheduled_count;
+ 	unsigned short			migration_flags;
+ 
+ #ifdef CONFIG_PREEMPT_RCU
+diff --git a/kernel/linux-6.13.2/init/init_task.c b/kernel/linux-6.13.2/init/init_task.c
+index e557f622b..23df3223a 100644
+--- a/kernel/linux-6.13.2/init/init_task.c
++++ b/kernel/linux-6.13.2/init/init_task.c
+@@ -68,6 +68,7 @@ struct task_struct init_task __aligned(L1_CACHE_BYTES) = {
+ 	.thread_info	= INIT_THREAD_INFO(init_task),
+ 	.stack_refcount	= REFCOUNT_INIT(1),
+ #endif
++	.scheduled_count= ATOMIC_INIT(0),
+ 	.__state	= 0,
+ 	.stack		= init_stack,
+ 	.usage		= REFCOUNT_INIT(2),
+diff --git a/kernel/linux-6.13.2/kernel/fork.c b/kernel/linux-6.13.2/kernel/fork.c
+index b71f67df9..0603567c7 100644
+--- a/kernel/linux-6.13.2/kernel/fork.c
++++ b/kernel/linux-6.13.2/kernel/fork.c
+@@ -2236,6 +2236,8 @@ __latent_entropy struct task_struct *copy_process(
+ 	if (!p)
+ 		goto fork_out;
+ 
++	atomic64_set(&p->scheduled_count, 0);
++
+ 	p->flags &= ~PF_KTHREAD;
+ 	if (args->kthread)
+ 		p->flags |= PF_KTHREAD;
+diff --git a/kernel/linux-6.13.2/kernel/sched/core.c b/kernel/linux-6.13.2/kernel/sched/core.c
+index a02e66807..d64c0c0c4 100644
+--- a/kernel/linux-6.13.2/kernel/sched/core.c
++++ b/kernel/linux-6.13.2/kernel/sched/core.c
+@@ -6706,6 +6706,7 @@ static void __sched notrace __schedule(int sched_mode)
+ 	}
+ 
+ 	next = pick_next_task(rq, prev, &rf);
++	atomic64_inc(&next->scheduled_count);
+ 	rq_set_donor(rq, next);
+ picked:
+ 	clear_tsk_need_resched(prev);
